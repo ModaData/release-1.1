@@ -53,5 +53,8 @@ __pycache__/
 dist/
 .pytest_cache/
 
+# ── Large ML models (download at runtime or use Git LFS) ──────
+public/models/*.onnx
+
 # ── Claude ─────────────────────────────────────────────────────
 .claude/
