@@ -92,12 +92,16 @@ async function runpodPollResult(jobId, maxWaitMs = 600000) {
     const status = await res.json();
 
     if (status.status === "COMPLETED") {
+      console.log(`[blender] RunPod job ${jobId} completed`);
       return status.output;
     }
     if (status.status === "FAILED") {
+      console.error(`[blender] RunPod job ${jobId} FAILED:`, status.error);
       throw new Error(status.error || "RunPod job failed");
     }
-    // IN_QUEUE or IN_PROGRESS — keep polling
+    if (i % 5 === 0) {
+      console.log(`[blender] RunPod job ${jobId}: ${status.status} (poll ${i + 1}/${maxPolls})`);
+    }
   }
 
   throw new Error("RunPod job timed out");

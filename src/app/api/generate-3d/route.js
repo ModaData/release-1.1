@@ -56,11 +56,11 @@ async function uploadImageToNVCF(dataUrl, apiKey) {
   console.log(`[generate-3d/trellis] Got asset ID: ${assetId}, uploading binary...`);
 
   // Step 2: PUT binary image to presigned S3 URL
+  // IMPORTANT: Only send Content-Type — extra headers invalidate the presigned signature
   const putRes = await fetch(uploadUrl, {
     method: "PUT",
     headers: {
       "Content-Type": mimeType,
-      "x-amz-meta-nvcf-asset-description": "garment-image",
     },
     body: buffer,
   });
