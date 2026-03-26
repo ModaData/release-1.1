@@ -52,21 +52,38 @@ async function uploadImageToNVCF(dataUrl, apiKey) {
     throw new Error(`NVCF asset request failed (${assetRes.status}): ${err.substring(0, 200)}`);
   }
 
-  const { uploadUrl, assetId } = await assetRes.json();
-  console.log(`[generate-3d/trellis] Got asset ID: ${assetId}, uploading binary...`);
+  const assetData = await assetRes.json();
+  const { uploadUrl, assetId } = assetData;
+  console.log(`[generate-3d/trellis] Got asset ID: ${assetId}`);
+  console.log(`[generate-3d/trellis] Asset response keys:`, JSON.stringify(Object.keys(assetData)));
 
   // Step 2: PUT binary image to presigned S3 URL
-  // IMPORTANT: Only send Content-Type — extra headers invalidate the presigned signature
+  // Parse the signed headers from the presigned URL to send ONLY those
+  const urlObj = new URL(uploadUrl);
+  const signedHeadersParam = urlObj.searchParams.get("X-Amz-SignedHeaders") || "";
+  const signedHeaders = signedHeadersParam.split(";").filter(Boolean);
+  console.log(`[generate-3d/trellis] Presigned URL signed headers: [${signedHeaders.join(", ")}]`);
+
+  // Build ONLY the headers that the presigned URL was signed for
+  const putHeaders = {};
+  for (const h of signedHeaders) {
+    const lower = h.toLowerCase();
+    if (lower === "content-type") putHeaders["Content-Type"] = mimeType;
+    else if (lower === "x-amz-meta-nvcf-asset-id") putHeaders["x-amz-meta-nvcf-asset-id"] = assetId;
+    else if (lower === "host") { /* fetch sets Host automatically */ }
+  }
+
+  console.log(`[generate-3d/trellis] PUT headers:`, JSON.stringify(putHeaders));
+
   const putRes = await fetch(uploadUrl, {
     method: "PUT",
-    headers: {
-      "Content-Type": mimeType,
-    },
+    headers: putHeaders,
     body: buffer,
   });
 
   if (!putRes.ok) {
     const err = await putRes.text().catch(() => "");
+    console.error(`[generate-3d/trellis] S3 PUT failed (${putRes.status}):`, err.substring(0, 500));
     throw new Error(`NVCF asset upload failed (${putRes.status}): ${err.substring(0, 200)}`);
   }
 
@@ -110,7 +127,7 @@ async function handleTrellis(imageDataUrl, trellisParams = {}) {
       "NVCF-INPUT-ASSET-REFERENCES": assetId,
     },
     body: JSON.stringify({
-      image: assetId,
+      image: `data:image/png;asset_id,${assetId}`,
       mode: "image",
       seed,
       output_format: "glb",
