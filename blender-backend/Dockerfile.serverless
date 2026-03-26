@@ -14,11 +14,12 @@ ENV BLENDER_VERSION=4.0.2
 ENV BLENDER_URL=https://download.blender.org/release/Blender4.0/blender-4.0.2-linux-x64.tar.xz
 ENV BLENDER_BIN=/usr/local/blender/blender
 
-# ── System packages Blender needs for headless/GPU rendering ──────
+# ── System packages + Blender install (single layer for reliability) ──
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
     wget \
+    ca-certificates \
     xz-utils \
     libgl1 \
     libgles2 \
@@ -29,14 +30,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libx11-6 \
     libxi6 \
     libxxf86vm1 \
-    && rm -rf /var/lib/apt/lists/*
-
-# ── Download and install Blender 4.0.2 from official mirror ───────
-RUN wget -q "$BLENDER_URL" -O /tmp/blender.tar.xz \
+    && rm -rf /var/lib/apt/lists/* \
+    && wget -q "$BLENDER_URL" -O /tmp/blender.tar.xz \
     && mkdir -p /usr/local/blender \
     && tar -xJf /tmp/blender.tar.xz -C /usr/local/blender --strip-components=1 \
     && rm /tmp/blender.tar.xz \
-    && /usr/local/blender/blender --version   # smoke-test
+    && /usr/local/blender/blender --version
 
 # ── Python dependencies for handler + Pillow GIF assembly ─────────
 RUN pip3 install --no-cache-dir \
