@@ -14,11 +14,65 @@ const MAX_POLL_ATTEMPTS = 60; // 5 minutes max
 
 // ═══════════════════════════════════════════════════════════════
 // TRELLIS (Microsoft, via NVIDIA NIM API)
-// Docs: https://docs.api.nvidia.com/nim/reference/microsoft-trellis
-// Endpoint returns base64-encoded GLB directly (no polling needed)
+// Uses NVCF asset upload pattern:
+//   1. POST to /v2/nvcf/assets → get presigned S3 URL + assetId
+//   2. PUT binary image to presigned URL
+//   3. POST to inference endpoint with assetId reference
 // ═══════════════════════════════════════════════════════════════
 
 const NVIDIA_TRELLIS_URL = "https://ai.api.nvidia.com/v1/genai/microsoft/trellis";
+const NVIDIA_ASSETS_URL = "https://api.nvcf.nvidia.com/v2/nvcf/assets";
+
+async function uploadImageToNVCF(dataUrl, apiKey) {
+  // Parse the data URL to get binary
+  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+  if (!match) throw new Error("Invalid image data URL");
+
+  const mimeType = match[1];
+  const buffer = Buffer.from(match[2], "base64");
+
+  console.log(`[generate-3d/trellis] Uploading image (${Math.round(buffer.length / 1024)}KB, ${mimeType}) to NVCF assets...`);
+
+  // Step 1: Request a presigned upload URL
+  const assetRes = await fetch(NVIDIA_ASSETS_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      contentType: mimeType,
+      description: "Garment image for Trellis 3D generation",
+    }),
+  });
+
+  if (!assetRes.ok) {
+    const err = await assetRes.text().catch(() => "");
+    throw new Error(`NVCF asset request failed (${assetRes.status}): ${err.substring(0, 200)}`);
+  }
+
+  const { uploadUrl, assetId } = await assetRes.json();
+  console.log(`[generate-3d/trellis] Got asset ID: ${assetId}, uploading binary...`);
+
+  // Step 2: PUT binary image to presigned S3 URL
+  const putRes = await fetch(uploadUrl, {
+    method: "PUT",
+    headers: {
+      "Content-Type": mimeType,
+      "x-amz-meta-nvcf-asset-description": "garment-image",
+    },
+    body: buffer,
+  });
+
+  if (!putRes.ok) {
+    const err = await putRes.text().catch(() => "");
+    throw new Error(`NVCF asset upload failed (${putRes.status}): ${err.substring(0, 200)}`);
+  }
+
+  console.log(`[generate-3d/trellis] Asset uploaded successfully: ${assetId}`);
+  return assetId;
+}
 
 async function handleTrellis(imageDataUrl, trellisParams = {}) {
   const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY;
@@ -29,11 +83,13 @@ async function handleTrellis(imageDataUrl, trellisParams = {}) {
     );
   }
 
-  // Build the image payload — NVIDIA expects data URL or base64
-  let imagePayload = imageDataUrl;
-  // If it's a raw base64 string without prefix, add it
-  if (!imageDataUrl.startsWith("data:")) {
-    imagePayload = `data:image/png;base64,${imageDataUrl}`;
+  // Step 1+2: Upload image to NVCF assets
+  let assetId;
+  try {
+    assetId = await uploadImageToNVCF(imageDataUrl, NVIDIA_API_KEY);
+  } catch (err) {
+    console.error("[generate-3d/trellis] Asset upload error:", err.message);
+    return NextResponse.json({ error: err.message }, { status: 500 });
   }
 
   const seed = trellisParams.seed ?? 0;
@@ -42,17 +98,19 @@ async function handleTrellis(imageDataUrl, trellisParams = {}) {
   const slatCfgScale = trellisParams.slat_cfg_scale ?? 3;
   const ssCfgScale = trellisParams.ss_cfg_scale ?? 7.5;
 
-  console.log(`[generate-3d/trellis] Calling NVIDIA NIM API (seed=${seed}, steps=${slatSamplingSteps})...`);
+  console.log(`[generate-3d/trellis] Calling inference (seed=${seed}, asset=${assetId})...`);
 
+  // Step 3: Call inference with asset reference
   const res = await fetch(NVIDIA_TRELLIS_URL, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${NVIDIA_API_KEY}`,
       Accept: "application/json",
       "Content-Type": "application/json",
+      "NVCF-INPUT-ASSET-REFERENCES": assetId,
     },
     body: JSON.stringify({
-      image: imagePayload,
+      image: assetId,
       mode: "image",
       seed,
       output_format: "glb",
