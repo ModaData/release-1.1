@@ -160,6 +160,54 @@ async def generate_from_spec(request: Request):
     return FileResponse(output_path, media_type="model/gltf-binary", filename="garment.glb")
 
 
+# ── POST /api/sew-panels — 2D pattern panels → cloth sim → 3D garment ──
+@app.post("/api/sew-panels")
+async def sew_panels(request: Request):
+    """The Golden Path: 2D patterns → Blender cloth sim → 3D draped garment.
+    Input: JSON with 'panels' (2D coordinates) + 'metadata' (fabric, color, etc.)
+    Output: GLB file with shape keys (Flat + Draped)
+    """
+    body = await request.json()
+    spec = body.get("spec", body)  # Accept spec directly or wrapped
+    sim_frames = body.get("sim_frames", 60)
+
+    panels = spec.get("panels", [])
+    metadata = spec.get("metadata", {})
+
+    if not panels:
+        raise HTTPException(status_code=400, detail="No panels in spec")
+
+    spec_json = json.dumps(spec)
+    job_id = str(uuid.uuid4())[:8]
+    output_path = OUTPUT_DIR / f"{job_id}_sewn.glb"
+
+    cmd = [
+        BLENDER_BIN, "--background", "--python",
+        str(SCRIPTS_DIR / "sew_panels_to_3d.py"),
+        "--", "--spec_json", spec_json,
+        "--output", str(output_path),
+        "--sim_frames", str(sim_frames),
+    ]
+
+    panel_names = [p.get("name", "?") for p in panels]
+    fabric = metadata.get("fabric_type", "cotton")
+    print(f"[blender] Sewing {len(panels)} panels ({', '.join(panel_names)}) in {fabric} (job {job_id}, {sim_frames} frames)")
+
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+
+    if result.returncode != 0:
+        print(f"[blender] STDERR: {result.stderr[-500:]}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Sewing simulation failed: {result.stderr[-300:]}"
+        )
+
+    if not output_path.exists():
+        raise HTTPException(status_code=500, detail="Blender produced no output")
+
+    return FileResponse(output_path, media_type="model/gltf-binary", filename="garment_sewn.glb")
+
+
 # ── POST /api/auto-fix — One-click repair → remesh → smooth pipeline ──
 @app.post("/api/auto-fix")
 async def auto_fix(
