@@ -115,25 +115,39 @@ export default function PatternEditor2D({
       const cellW = maxPanelW + CANVAS_PADDING * 2;
       const cellH = maxPanelH + CANVAS_PADDING * 2;
 
-      // Calculate origin offsets to center the grid
+      // Auto-fit: scale down if grid doesn't fit in canvas
       const gridW = cols * cellW;
       const gridH = rows * cellH;
-      const offsetX = (canvasWidth - gridW) / 2 + cellW / 2;
-      const offsetY = (canvasHeight - gridH) / 2 + cellH / 2;
+      const availW = canvasWidth - 20;
+      const availH = canvasHeight - 20;
+      let autoScale = 1;
+      if (gridW > availW || gridH > availH) {
+        autoScale = Math.min(availW / gridW, availH / gridH, 1);
+      }
+
+      // Calculate origin offsets to center the grid, with minimum top padding
+      const scaledGridW = gridW * autoScale;
+      const scaledGridH = gridH * autoScale;
+      const offsetX = (canvasWidth - scaledGridW) / 2 + (cellW * autoScale) / 2;
+      const offsetY = Math.max(
+        (canvasHeight - scaledGridH) / 2 + (cellH * autoScale) / 2,
+        (cellH * autoScale) / 2 + 30  // Minimum 30px from top
+      );
 
       const infos = [];
 
       panels.forEach((panel, panelIdx) => {
         const col = panelIdx % cols;
         const row = Math.floor(panelIdx / cols);
-        const centerX = offsetX + col * cellW;
-        const centerY = offsetY + row * cellH;
+        const centerX = offsetX + col * cellW * autoScale;
+        const centerY = offsetY + row * cellH * autoScale;
         const colors = PANEL_COLORS[panelIdx % PANEL_COLORS.length];
+        const effectiveScale = CM_TO_PX * zoom * autoScale;
 
         // Convert panel points to canvas coordinates
         const canvasPoints = panel.points.map(pt => ({
-          x: centerX + pt[0] * CM_TO_PX * zoom,
-          y: centerY - pt[1] * CM_TO_PX * zoom, // Flip Y (canvas Y is down)
+          x: centerX + pt[0] * effectiveScale,
+          y: centerY - pt[1] * effectiveScale, // Flip Y (canvas Y is down)
         }));
 
         // Draw panel polygon
@@ -168,7 +182,7 @@ export default function PatternEditor2D({
 
         // Draw grain line arrow
         if (panel.grain_line) {
-          const grainLen = 30 * zoom;
+          const grainLen = 30 * zoom * autoScale;
           const gx = panel.grain_line[0];
           const gy = panel.grain_line[1];
           const grainLine = new Line(
@@ -208,8 +222,8 @@ export default function PatternEditor2D({
 
           // Handle drag — update the pattern spec
           dot.on("moving", function () {
-            const newX = (this.left - centerX) / (CM_TO_PX * zoom);
-            const newY = -(this.top - centerY) / (CM_TO_PX * zoom); // Flip Y back
+            const newX = (this.left - centerX) / effectiveScale;
+            const newY = -(this.top - centerY) / effectiveScale; // Flip Y back
 
             // Update the point in the spec
             if (spec.panels[panelIdx] && spec.panels[panelIdx].points[ptIdx]) {
@@ -222,8 +236,8 @@ export default function PatternEditor2D({
 
               // Redraw the polygon in place (without full re-render)
               const updatedPoints = spec.panels[panelIdx].points.map(p => ({
-                x: centerX + p[0] * CM_TO_PX * zoom,
-                y: centerY - p[1] * CM_TO_PX * zoom,
+                x: centerX + p[0] * effectiveScale,
+                y: centerY - p[1] * effectiveScale,
               }));
               polygon.set({ points: updatedPoints });
               canvas.renderAll();
@@ -250,7 +264,7 @@ export default function PatternEditor2D({
 
         const label = new Text(`${panel.name}\n${panelW} x ${panelH} cm`, {
           left: centerX,
-          top: centerY + maxPanelH / 2 + 12,
+          top: centerY + (maxPanelH * autoScale) / 2 + 12,
           fontSize: 10,
           fill: "#888",
           fontFamily: "Arial",
