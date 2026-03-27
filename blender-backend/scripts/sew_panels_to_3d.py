@@ -117,9 +117,8 @@ def create_panel_mesh(panel_data, cm_to_m=0.01):
     bpy.ops.object.mode_set(mode="EDIT")
     bpy.ops.mesh.select_all(action="SELECT")
 
-    # 2 subdivisions for reasonable cloth sim resolution
-    for _ in range(2):
-        bpy.ops.mesh.subdivide(number_cuts=1)
+    # 1 subdivision for memory efficiency (higher = better drape but more RAM)
+    bpy.ops.mesh.subdivide(number_cuts=2)
 
     # UV unwrap using smart_project (works in background mode, unlike project_from_view)
     bpy.ops.uv.smart_project(angle_limit=math.radians(66), island_margin=0.02)

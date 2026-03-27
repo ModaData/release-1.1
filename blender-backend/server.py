@@ -169,7 +169,7 @@ async def sew_panels(request: Request):
     """
     body = await request.json()
     spec = body.get("spec", body)  # Accept spec directly or wrapped
-    sim_frames = body.get("sim_frames", 60)
+    sim_frames = min(body.get("sim_frames", 30), 60)  # Cap at 60 to prevent OOM
 
     panels = spec.get("panels", [])
     metadata = spec.get("metadata", {})
