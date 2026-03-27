@@ -53,12 +53,17 @@ RUN pip3 install --no-cache-dir \
 RUN mkdir -p /app/scripts /app/templates /tmp/blender-work/input /tmp/blender-work/output /tmp/blender-work/frames
 WORKDIR /app
 COPY server.py /app/server.py
+COPY ws_bridge.py /app/ws_bridge.py
+COPY garment_schema.py /app/garment_schema.py
 COPY scripts/ /app/scripts/
 
-EXPOSE 8000
+EXPOSE 8000 8765
 
 # Health check — verify Blender + FastAPI are working
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
 
-CMD ["python3", "-m", "uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
+COPY start.sh /app/start.sh
+RUN chmod +x /app/start.sh
+
+CMD ["/app/start.sh"]
