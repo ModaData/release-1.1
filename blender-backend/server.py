@@ -12,6 +12,7 @@ import uuid
 import subprocess
 import tempfile
 import shutil
+import json
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
@@ -102,6 +103,61 @@ async def save_upload(upload: UploadFile) -> Path:
 @app.get("/health")
 async def health():
     return {"status": "ok", "blender": BLENDER_BIN}
+
+
+# ── POST /api/generate-from-spec — Text-to-3D parametric garment generation ──
+@app.post("/api/generate-from-spec")
+async def generate_from_spec(request: Request):
+    """Generate a 3D garment from a GarmentSpec JSON (from GPT-4 orchestrator)."""
+    body = await request.json()
+    spec = body.get("spec", {})
+
+    # The spec contains garment parameters; extract the geometry node inputs
+    garment_spec = {
+        "garment_type": spec.get("template", "tshirt_base").replace("_base", ""),
+        "sleeve_length": spec.get("geometry_node_inputs", {}).get("sleeve_length", 1.0),
+        "body_length": spec.get("geometry_node_inputs", {}).get("body_length", 0.7),
+        "shoulder_width": spec.get("geometry_node_inputs", {}).get("shoulder_width", 0.5),
+        "fit": {0.85: "slim", 1.0: "regular", 1.15: "relaxed", 1.35: "oversized"}.get(
+            spec.get("geometry_node_inputs", {}).get("fit_scale", 1.0), "regular"
+        ),
+        "color_hex": spec.get("material", {}).get("color_hex", "#333333"),
+        "fabric_type": spec.get("material", {}).get("fabric_type", "cotton"),
+        "collar_style": spec.get("collar", "none"),
+        "lapel_style": spec.get("lapel", "none"),
+        "closure": spec.get("closure", "pullover"),
+        "sleeve_style": spec.get("sleeve_style", "set_in"),
+        "hem_style": spec.get("hem_style", "straight"),
+        "button_count": spec.get("geometry_node_inputs", {}).get("button_count", 0),
+        "construction_details": spec.get("construction", []),
+        "name": spec.get("template", "garment").replace("_base", "").title(),
+    }
+
+    spec_json = json.dumps(garment_spec)
+    job_id = str(uuid.uuid4())[:8]
+    output_path = OUTPUT_DIR / f"{job_id}_garment.glb"
+
+    cmd = [
+        BLENDER_BIN, "--background", "--python",
+        str(SCRIPTS_DIR / "generate_from_spec.py"),
+        "--", "--spec_json", spec_json, "--output", str(output_path),
+    ]
+
+    print(f"[blender] Generating garment: {garment_spec.get('garment_type')} (job {job_id})")
+
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+
+    if result.returncode != 0:
+        print(f"[blender] STDERR: {result.stderr[-500:]}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Garment generation failed: {result.stderr[-300:]}"
+        )
+
+    if not output_path.exists():
+        raise HTTPException(status_code=500, detail="Blender produced no garment output")
+
+    return FileResponse(output_path, media_type="model/gltf-binary", filename="garment.glb")
 
 
 # ── POST /api/auto-fix — One-click repair → remesh → smooth pipeline ──
