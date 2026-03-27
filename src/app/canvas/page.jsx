@@ -10,6 +10,7 @@ import RenderPanel from "@/components/drawing-canvas/RenderPanel";
 import CoPilotSidebar from "@/components/drawing-canvas/CoPilotSidebar";
 import ExportPanel from "@/components/drawing-canvas/ExportPanel";
 import GarmentAIChat from "@/components/drawing-canvas/GarmentAIChat";
+import PatternEditor2D from "@/components/drawing-canvas/PatternEditor2D";
 
 function CanvasLayout() {
   const { state, dispatch } = useDrawingCanvas();
@@ -20,6 +21,8 @@ function CanvasLayout() {
   const [showExport, setShowExport] = useState(false);
   const [aiChatOpen, setAiChatOpen] = useState(false);
   const [patternSpec, setPatternSpec] = useState(null);
+  // Workspace modes: "sketch" (Draw+Render), "pattern" (2D Pattern+3D), "pattern-only" (full 2D editor)
+  const [workspace, setWorkspace] = useState("sketch");
 
   // Splitter drag state
   const [isDragging, setIsDragging] = useState(false);
@@ -228,8 +231,41 @@ function CanvasLayout() {
         canRedo={canRedo}
       />
 
+      {/* ── Workspace Mode Toggle ── */}
+      <div className="flex items-center justify-between px-3 py-1.5 border-b border-gray-100 bg-gray-50/50">
+        <div className="flex gap-1">
+          {[
+            { id: "sketch", label: "Sketch + Render", icon: "M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" },
+            { id: "pattern", label: "Pattern + 3D", icon: "M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z" },
+            { id: "pattern-only", label: "Pattern Editor", icon: "M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7" },
+          ].map(({ id, label, icon }) => (
+            <button
+              key={id}
+              onClick={() => setWorkspace(id)}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-medium transition-colors ${
+                workspace === id
+                  ? "bg-indigo-600 text-white shadow-sm"
+                  : "text-gray-500 hover:bg-gray-100"
+              }`}
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d={icon} />
+              </svg>
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {/* Pattern spec badge */}
+        {patternSpec?.panels && (
+          <span className="text-[9px] px-2 py-0.5 rounded-full bg-violet-50 text-violet-600 border border-violet-100">
+            {patternSpec.panels.length} panels | {patternSpec.metadata?.fabric_type || "cotton"}
+          </span>
+        )}
+      </div>
+
       {/* Tab switcher for mobile */}
-      {viewMode === "tabs" && (
+      {viewMode === "tabs" && workspace === "sketch" && (
         <div className="flex border-b border-gray-200 bg-white">
           <button
             onClick={() => setActiveTab("draw")}
@@ -258,44 +294,144 @@ function CanvasLayout() {
       <div ref={containerRef} className="flex-1 flex relative overflow-hidden" style={{
         flexDirection: viewMode === "stack" ? "column" : "row",
       }}>
-        {/* Left: Drawing Panel */}
-        {(viewMode !== "tabs" || activeTab === "draw") && (
-          <div
-            className="relative"
-            style={{
-              width: viewMode === "split" ? `${splitRatio * 100}%` : "100%",
-              height: viewMode === "stack" ? "50%" : "100%",
-              minWidth: viewMode === "split" ? "360px" : undefined,
-            }}
-          >
-            <DrawingPanel
-              ref={drawingCanvasRef}
-              onHistoryChange={handleHistoryChange}
+
+        {/* ════════ SKETCH WORKSPACE (Draw + Render) ════════ */}
+        {workspace === "sketch" && (
+          <>
+            {/* Left: Drawing Panel */}
+            {(viewMode !== "tabs" || activeTab === "draw") && (
+              <div
+                className="relative"
+                style={{
+                  width: viewMode === "split" ? `${splitRatio * 100}%` : "100%",
+                  height: viewMode === "stack" ? "50%" : "100%",
+                  minWidth: viewMode === "split" ? "360px" : undefined,
+                }}
+              >
+                <DrawingPanel
+                  ref={drawingCanvasRef}
+                  onHistoryChange={handleHistoryChange}
+                />
+              </div>
+            )}
+
+            {/* Draggable Splitter */}
+            {viewMode === "split" && (
+              <div
+                onMouseDown={handleSplitterMouseDown}
+                className={`w-1 cursor-col-resize flex-shrink-0 transition-colors z-10 ${
+                  isDragging ? "bg-indigo-500" : "bg-gray-200 hover:bg-indigo-400"
+                }`}
+              />
+            )}
+
+            {/* Right: Render Panel */}
+            {(viewMode !== "tabs" || activeTab === "render") && (
+              <div
+                className="relative"
+                style={{
+                  width: viewMode === "split" ? `${(1 - splitRatio) * 100}%` : "100%",
+                  height: viewMode === "stack" ? "50%" : "100%",
+                  minWidth: viewMode === "split" ? "360px" : undefined,
+                }}
+              >
+                <RenderPanel onRetry={handleRetry} />
+              </div>
+            )}
+          </>
+        )}
+
+        {/* ════════ PATTERN + 3D WORKSPACE ════════ */}
+        {workspace === "pattern" && (
+          <>
+            {/* Left: 2D Pattern Editor */}
+            <div
+              className="relative"
+              style={{
+                width: `${splitRatio * 100}%`,
+                height: "100%",
+                minWidth: "360px",
+              }}
+            >
+              <PatternEditor2D
+                patternSpec={patternSpec}
+                onPatternChange={(updatedSpec) => setPatternSpec(updatedSpec)}
+                onResimulate={async (spec) => {
+                  // Send updated pattern to Blender for re-simulation
+                  try {
+                    const blenderUrl = process.env.NEXT_PUBLIC_BLENDER_API_URL || "";
+                    const res = await fetch("/api/garment-ai", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        prompt: "Re-simulate with updated pattern coordinates",
+                        currentSpec: spec,
+                      }),
+                    });
+                    if (res.ok) {
+                      const data = await res.json();
+                      if (data.glbUrl) {
+                        dispatch({ type: "SET_GLB_URL", payload: data.glbUrl });
+                        dispatch({ type: "SET_VIEW_MODE", payload: "3d" });
+                      }
+                    }
+                  } catch (err) {
+                    console.error("[pattern] Re-simulate failed:", err);
+                  }
+                }}
+              />
+            </div>
+
+            {/* Splitter */}
+            <div
+              onMouseDown={handleSplitterMouseDown}
+              className={`w-1 cursor-col-resize flex-shrink-0 transition-colors z-10 ${
+                isDragging ? "bg-indigo-500" : "bg-gray-200 hover:bg-violet-400"
+              }`}
             />
-          </div>
+
+            {/* Right: 3D Viewer */}
+            <div
+              className="relative"
+              style={{
+                width: `${(1 - splitRatio) * 100}%`,
+                height: "100%",
+                minWidth: "360px",
+              }}
+            >
+              <RenderPanel onRetry={handleRetry} />
+            </div>
+          </>
         )}
 
-        {/* Draggable Splitter */}
-        {viewMode === "split" && (
-          <div
-            onMouseDown={handleSplitterMouseDown}
-            className={`w-1 cursor-col-resize flex-shrink-0 transition-colors z-10 ${
-              isDragging ? "bg-indigo-500" : "bg-gray-200 hover:bg-indigo-400"
-            }`}
-          />
-        )}
-
-        {/* Right: Render Panel */}
-        {(viewMode !== "tabs" || activeTab === "render") && (
-          <div
-            className="relative"
-            style={{
-              width: viewMode === "split" ? `${(1 - splitRatio) * 100}%` : "100%",
-              height: viewMode === "stack" ? "50%" : "100%",
-              minWidth: viewMode === "split" ? "360px" : undefined,
-            }}
-          >
-            <RenderPanel onRetry={handleRetry} />
+        {/* ════════ PATTERN-ONLY WORKSPACE ════════ */}
+        {workspace === "pattern-only" && (
+          <div className="relative w-full h-full">
+            <PatternEditor2D
+              patternSpec={patternSpec}
+              onPatternChange={(updatedSpec) => setPatternSpec(updatedSpec)}
+              onResimulate={async (spec) => {
+                try {
+                  const res = await fetch("/api/garment-ai", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      prompt: "Re-simulate with updated pattern coordinates",
+                      currentSpec: spec,
+                    }),
+                  });
+                  if (res.ok) {
+                    const data = await res.json();
+                    if (data.glbUrl) {
+                      dispatch({ type: "SET_GLB_URL", payload: data.glbUrl });
+                      setWorkspace("pattern"); // Switch to split view to see 3D result
+                    }
+                  }
+                } catch (err) {
+                  console.error("[pattern] Re-simulate failed:", err);
+                }
+              }}
+            />
           </div>
         )}
 
