@@ -261,7 +261,7 @@ function GarmentPart({
       rotation={meshData.rotation}
       scale={meshData.scale}
       frustumCulled={viewMode !== "retopo"}
-      morphTargetInfluences={meshData.morphTargetInfluences}
+      {...(meshData.morphTargetInfluences ? { morphTargetInfluences: meshData.morphTargetInfluences } : {})}
       onPointerOver={(e) => { e.stopPropagation(); if (!isGhosted) onPointerOver?.(); }}
       onPointerOut={(e) => { e.stopPropagation(); onPointerOut?.(); }}
       onClick={(e) => { e.stopPropagation(); if (!isGhosted) onClick?.(); }}
@@ -383,7 +383,7 @@ function InteractiveGarmentModel({
           rotation: child.rotation.clone(),
           scale: child.scale.clone(),
           parsed,
-          morphTargetInfluences: child.morphTargetInfluences ? [...child.morphTargetInfluences] : undefined,
+          morphTargetInfluences: (child.morphTargetInfluences && child.geometry?.morphAttributes?.position) ? [...child.morphTargetInfluences] : undefined,
         });
       }
     });

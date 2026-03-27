@@ -8,11 +8,12 @@ export const maxDuration = 300;
 export const dynamic = "force-dynamic";
 
 // ── Mode detection ──
-const RUNPOD_ENDPOINT_ID = process.env.RUNPOD_ENDPOINT_ID;
-const RUNPOD_API_KEY = process.env.RUNPOD_API_KEY;
-const USE_SERVERLESS = !!(RUNPOD_ENDPOINT_ID && RUNPOD_API_KEY);
-const BLENDER_API_URL = process.env.BLENDER_API_URL || "http://localhost:8000";
+const RUNPOD_ENDPOINT_ID = (process.env.RUNPOD_ENDPOINT_ID || "").trim();
+const RUNPOD_API_KEY = (process.env.RUNPOD_API_KEY || "").trim();
+const USE_SERVERLESS = RUNPOD_ENDPOINT_ID.length > 0 && RUNPOD_API_KEY.length > 0;
+const BLENDER_API_URL = (process.env.BLENDER_API_URL || "http://localhost:8000").trim();
 const RUNPOD_BASE = `https://api.runpod.ai/v2/${RUNPOD_ENDPOINT_ID}`;
+console.log(`[blender/route] Mode: ${USE_SERVERLESS ? "RunPod Serverless" : "Direct HTTP → " + BLENDER_API_URL}`);
 
 // Map action names to Blender backend endpoints (used in direct HTTP mode)
 const ACTION_ENDPOINTS = {

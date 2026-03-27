@@ -2,40 +2,63 @@ FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Step 1: Install ALL system packages Blender needs (comprehensive list)
-RUN set -eux && apt-get update && apt-get install -y --no-install-recommends \
+# Step 1: Install ALL system packages Blender 4.0.2 needs
+# This is the comprehensive list derived from ldd on the Blender binary + all bundled .so files
+RUN set -eux \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
     python3 python3-pip wget ca-certificates xz-utils \
-    libgl1 libgles2 libglib2.0-0 libsm6 libxrender1 \
-    libxext6 libx11-6 libxi6 libxxf86vm1 \
-    libxkbcommon0 libxkbcommon-x11-0 libdbus-1-3 \
-    libxfixes3 libxrandr2 libxinerama1 libxcursor1 \
-    libwayland-client0 libwayland-cursor0 libwayland-egl1 \
-    libdecor-0-0 libegl1 libepoxy0 \
+    # OpenGL / EGL
+    libgl1 libgles2 libegl1 libepoxy0 libglvnd0 libglx0 \
+    # X11 core
+    libx11-6 libxext6 libxfixes3 libxrender1 libxi6 libxrandr2 \
+    libxinerama1 libxcursor1 libxxf86vm1 libxkbcommon0 libxkbcommon-x11-0 \
+    libxss1 libxtst6 \
+    # Wayland
+    libwayland-client0 libwayland-cursor0 libwayland-egl1 libdecor-0-0 \
+    # System libs Blender links against
+    libglib2.0-0 libsm6 libdbus-1-3 libatomic1 \
+    # Audio (Blender tries to load these even headless)
+    libopenal1 libsndfile1 libjack-jackd2-0 libpulse0 \
+    # Image/codec libs
+    libtiff5 libwebp7 libopenexr25 libopenjp2-7 \
+    # Misc
+    libfontconfig1 libfreetype6 \
     && rm -rf /var/lib/apt/lists/*
 
 # Step 2: Download Blender 4.0.2
-RUN set -eux && wget -q "https://download.blender.org/release/Blender4.0/blender-4.0.2-linux-x64.tar.xz" -O /tmp/blender.tar.xz \
+RUN set -eux \
+    && wget -q "https://download.blender.org/release/Blender4.0/blender-4.0.2-linux-x64.tar.xz" \
+       -O /tmp/blender.tar.xz \
     && mkdir -p /usr/local/blender \
     && tar -xJf /tmp/blender.tar.xz -C /usr/local/blender --strip-components=1 \
-    && rm /tmp/blender.tar.xz \
-    && ls -la /usr/local/blender/
+    && rm /tmp/blender.tar.xz
 
-# Step 3: Verify blender works
-RUN set -eux && /usr/local/blender/blender --version
+# Step 3: Verify blender works AND check for missing shared libs
+RUN set -eux \
+    && /usr/local/blender/blender --version \
+    && echo "=== Checking for missing shared libraries ===" \
+    && ldd /usr/local/blender/blender 2>&1 | grep "not found" && exit 1 || echo "All libraries found!"
 
-ENV BLENDER_BIN=/usr/local/blender/blender
+# Step 4: Create symlink so scripts can find blender on PATH
+RUN ln -sf /usr/local/blender/blender /usr/local/bin/blender
+ENV BLENDER_BIN=/usr/local/bin/blender
 
-# Step 4: Python deps — FastAPI + uvicorn for dedicated pod mode
+# Step 5: Python deps — FastAPI + uvicorn for dedicated pod mode
 RUN pip3 install --no-cache-dir \
     fastapi==0.109.0 uvicorn==0.27.0 python-multipart==0.0.6 \
-    trimesh==4.0.8 numpy==1.26.3 Pillow==10.2.0
+    trimesh==4.0.8 numpy==1.26.3 Pillow==10.2.0 websockets==12.0
 
-# Step 5: App setup
-RUN mkdir -p /app/scripts /tmp/blender-work/input /tmp/blender-work/output /tmp/blender-work/frames
+# Step 6: App setup
+RUN mkdir -p /app/scripts /app/templates /tmp/blender-work/input /tmp/blender-work/output /tmp/blender-work/frames
 WORKDIR /app
 COPY server.py /app/server.py
 COPY scripts/ /app/scripts/
 
 EXPOSE 8000
+
+# Health check — verify Blender + FastAPI are working
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
 
 CMD ["python3", "-m", "uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]

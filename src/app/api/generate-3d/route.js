@@ -58,27 +58,29 @@ async function uploadImageToNVCF(dataUrl, apiKey) {
   console.log(`[generate-3d/trellis] Asset response keys:`, JSON.stringify(Object.keys(assetData)));
 
   // Step 2: PUT binary image to presigned S3 URL
-  // Parse the signed headers from the presigned URL to send ONLY those
+  // CRITICAL: The presigned URL's X-Amz-SignedHeaders tells us exactly which headers
+  // were included in the signature. We MUST send those and ONLY those.
+  // Node.js fetch may add extra headers (content-length, etc.) that break the signature.
   const urlObj = new URL(uploadUrl);
-  const signedHeadersParam = urlObj.searchParams.get("X-Amz-SignedHeaders") || "";
-  const signedHeaders = signedHeadersParam.split(";").filter(Boolean);
-  console.log(`[generate-3d/trellis] Presigned URL signed headers: [${signedHeaders.join(", ")}]`);
+  const signedHeadersParam = urlObj.searchParams.get("X-Amz-SignedHeaders") || "host";
+  const signedHeaders = new Set(signedHeadersParam.split(";").filter(Boolean));
+  console.log(`[generate-3d/trellis] Signed headers: [${[...signedHeaders].join(", ")}]`);
 
-  // Build ONLY the headers that the presigned URL was signed for
+  // Build headers matching EXACTLY what was signed
   const putHeaders = {};
-  for (const h of signedHeaders) {
-    const lower = h.toLowerCase();
-    if (lower === "content-type") putHeaders["Content-Type"] = mimeType;
-    else if (lower === "x-amz-meta-nvcf-asset-id") putHeaders["x-amz-meta-nvcf-asset-id"] = assetId;
-    else if (lower === "host") { /* fetch sets Host automatically */ }
-  }
+  if (signedHeaders.has("content-type")) putHeaders["Content-Type"] = mimeType;
+  if (signedHeaders.has("x-amz-meta-nvcf-asset-id")) putHeaders["x-amz-meta-nvcf-asset-id"] = assetId;
+  // If content-length was signed, add it explicitly
+  if (signedHeaders.has("content-length")) putHeaders["Content-Length"] = String(buffer.length);
 
   console.log(`[generate-3d/trellis] PUT headers:`, JSON.stringify(putHeaders));
 
+  // Use a Uint8Array (not Buffer) to avoid Node fetch adding transfer-encoding
   const putRes = await fetch(uploadUrl, {
     method: "PUT",
     headers: putHeaders,
-    body: buffer,
+    body: new Uint8Array(buffer),
+    duplex: "half",
   });
 
   if (!putRes.ok) {
