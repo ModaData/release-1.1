@@ -18,10 +18,10 @@ const PANEL_COLORS = [
   { fill: "rgba(239, 68, 68, 0.15)", stroke: "#ef4444", dot: "#dc2626" },     // red
 ];
 
-// Scale: 1cm = 4px on canvas
-const CM_TO_PX = 4;
-const CANVAS_PADDING = 60;
-const DOT_RADIUS = 5;
+// Scale: 1cm = 6px on canvas (larger for better visibility)
+const CM_TO_PX = 6;
+const CANVAS_PADDING = 40;
+const DOT_RADIUS = 4;
 
 export default function PatternEditor2D({
   patternSpec = null,

@@ -102,49 +102,28 @@ def create_panel_mesh(panel_data, cm_to_m=0.01):
     obj = bpy.data.objects.new(name, mesh)
     bpy.context.collection.objects.link(obj)
 
-    bm = bmesh.new()
+    # Use Blender's built-in mesh.from_pydata for reliable polygon creation
+    vertices = [(pt[0] * cm_to_m, pt[1] * cm_to_m, 0) for pt in points]
+    # Create a single N-gon face from all vertices
+    faces = [list(range(len(vertices)))]
 
-    # Create vertices from 2D coordinates
-    verts = []
-    for pt in points:
-        x = pt[0] * cm_to_m
-        y = pt[1] * cm_to_m
-        v = bm.verts.new((x, y, 0))
-        verts.append(v)
+    mesh.from_pydata(vertices, [], faces)
+    mesh.update()
 
-    bm.verts.ensure_lookup_table()
-
-    # Create edges connecting sequential vertices (closed polygon)
-    for i in range(len(verts)):
-        bm.edges.new((verts[i], verts[(i + 1) % len(verts)]))
-
-    bm.edges.ensure_lookup_table()
-
-    # Fill the polygon to create a face
-    try:
-        bm.faces.new(verts)
-    except ValueError:
-        # If simple face creation fails, try convex hull
-        bmesh.ops.convex_hull(bm, input=verts)
-
-    # Subdivide for cloth simulation resolution
-    # More subdivisions = better draping but slower sim
-    edges_to_sub = list(bm.edges)
-    for _ in range(3):  # 3 iterations → ~64x face count
-        result = bmesh.ops.subdivide_edges(bm, edges=edges_to_sub, cuts=1, use_grid_fill=True)
-        edges_to_sub = [e for e in result["geom_inner"] if isinstance(e, bmesh.types.BMEdge)]
-        if not edges_to_sub:
-            edges_to_sub = list(bm.edges)
-
-    bm.to_mesh(mesh)
-    bm.free()
-
-    # UV unwrap — each panel gets its own UV island
     bpy.context.view_layer.objects.active = obj
     obj.select_set(True)
+
+    # Subdivide using the operator (more reliable than bmesh.ops in background mode)
     bpy.ops.object.mode_set(mode="EDIT")
     bpy.ops.mesh.select_all(action="SELECT")
-    bpy.ops.uv.project_from_view(camera_bounds=False, correct_aspect=True, scale_to_bounds=True)
+
+    # 2 subdivisions for reasonable cloth sim resolution
+    for _ in range(2):
+        bpy.ops.mesh.subdivide(number_cuts=1)
+
+    # UV unwrap using smart_project (works in background mode, unlike project_from_view)
+    bpy.ops.uv.smart_project(angle_limit=math.radians(66), island_margin=0.02)
+
     bpy.ops.object.mode_set(mode="OBJECT")
 
     # Smooth shading
@@ -369,8 +348,8 @@ def run_simulation(frame_count=60):
 
 
 def finalize_and_export(panels_dict, avatar, metadata, output_path, sim_frames):
-    """Apply simulation, add shape keys, export GLB."""
-    # Apply cloth simulation as shape key on each panel
+    """Apply simulation, join panels, export GLB."""
+    # Apply cloth modifiers (bake the sim result into the mesh)
     for name, obj in panels_dict.items():
         if not obj:
             continue
@@ -378,82 +357,55 @@ def finalize_and_export(panels_dict, avatar, metadata, output_path, sim_frames):
         bpy.context.view_layer.objects.active = obj
         obj.select_set(True)
 
-        # Add Basis shape key (the flat 2D state)
-        bpy.ops.object.shape_key_add(from_mix=False)
-        obj.data.shape_keys.key_blocks[-1].name = "Flat"
-
-        # The current vertex positions (after sim) become "Draped"
-        # Apply cloth modifier as shape key
-        for mod in obj.modifiers:
-            if mod.type == "CLOTH":
+        # Apply all modifiers to bake the cloth sim into geometry
+        for mod in list(obj.modifiers):
+            try:
+                bpy.ops.object.modifier_apply(modifier=mod.name)
+            except RuntimeError as e:
+                print(f"[sew] Warning: could not apply modifier {mod.name} on {name}: {e}")
                 try:
-                    bpy.ops.object.modifier_apply_as_shapekey(
-                        keep_modifier=False, modifier=mod.name
-                    )
-                    # Rename the new shape key
-                    for kb in obj.data.shape_keys.key_blocks:
-                        if kb.name not in ("Flat", "Basis", "Draped"):
-                            kb.name = "Draped"
-                            break
-                except RuntimeError:
-                    # Fallback: apply normally
-                    bpy.ops.object.modifier_apply(modifier=mod.name)
-
-        # Set Draped as active
-        if obj.data.shape_keys:
-            for kb in obj.data.shape_keys.key_blocks:
-                kb.value = 1.0 if kb.name == "Draped" else 0.0
+                    bpy.ops.object.modifier_remove(modifier=mod.name)
+                except Exception:
+                    pass
 
         obj.select_set(False)
-
-    # Join all panels into one garment mesh
-    bpy.ops.object.select_all(action="DESELECT")
-    first_panel = None
-    for name, obj in panels_dict.items():
-        if obj:
-            obj.select_set(True)
-            if first_panel is None:
-                first_panel = obj
-
-    if first_panel:
-        bpy.context.view_layer.objects.active = first_panel
-        if sum(1 for o in panels_dict.values() if o) > 1:
-            bpy.ops.object.join()
-
-        garment = bpy.context.active_object
-        garment.name = metadata.get("name", "Garment")
 
     # Delete avatar (don't export it)
     if avatar:
         bpy.ops.object.select_all(action="DESELECT")
         avatar.select_set(True)
+        bpy.context.view_layer.objects.active = avatar
         bpy.ops.object.delete()
 
-    # Select garment for export
+    # Join all panels into one garment mesh
     bpy.ops.object.select_all(action="DESELECT")
-    garment = None
-    for obj in bpy.data.objects:
-        if obj.type == "MESH":
-            obj.select_set(True)
-            garment = obj
-            break
+    panel_objects = [obj for obj in panels_dict.values() if obj and obj.name in bpy.data.objects]
 
-    if not garment:
-        print("[sew] ERROR: No garment mesh found for export")
+    if not panel_objects:
+        print("[sew] ERROR: No panel objects left for export")
         return
 
-    bpy.context.view_layer.objects.active = garment
+    for obj in panel_objects:
+        obj.select_set(True)
+    bpy.context.view_layer.objects.active = panel_objects[0]
+
+    if len(panel_objects) > 1:
+        bpy.ops.object.join()
+
+    garment = bpy.context.active_object
+    garment.name = metadata.get("name", "Garment")
+
+    # Smooth shading
+    bpy.ops.object.shade_smooth()
 
     # Export GLB
     bpy.ops.export_scene.gltf(
         filepath=output_path,
         export_format="GLB",
         use_selection=True,
-        export_apply=False,
+        export_apply=True,
         export_materials="EXPORT",
         export_normals=True,
-        export_morph=True,
-        export_morph_normal=False,
     )
 
     # Write metadata sidecar
@@ -465,15 +417,13 @@ def finalize_and_export(panels_dict, avatar, metadata, output_path, sim_frames):
         "color_hex": metadata.get("color_hex", "#333333"),
         "panels": list(panels_dict.keys()),
         "sim_frames": sim_frames,
-        "shape_keys": ["Flat", "Draped"],
         "export_ready": True,
-        "clo3d_compatible": True,
     }
     with open(meta_path, "w") as f:
         json.dump(meta, f, indent=2)
 
     print(f"[sew] Exported: {output_path}")
-    print(f"[sew] Pattern metadata: {meta_path}")
+    print(f"[sew] Panel count: {len(panel_objects)}, vertex count: {len(garment.data.vertices)}")
 
 
 def main(spec, output_path, sim_frames=60):
