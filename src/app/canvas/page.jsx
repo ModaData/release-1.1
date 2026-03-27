@@ -9,6 +9,7 @@ import DrawingPanel from "@/components/drawing-canvas/DrawingPanel";
 import RenderPanel from "@/components/drawing-canvas/RenderPanel";
 import CoPilotSidebar from "@/components/drawing-canvas/CoPilotSidebar";
 import ExportPanel from "@/components/drawing-canvas/ExportPanel";
+import GarmentAIChat from "@/components/drawing-canvas/GarmentAIChat";
 
 function CanvasLayout() {
   const { state, dispatch } = useDrawingCanvas();
@@ -17,6 +18,8 @@ function CanvasLayout() {
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
   const [showExport, setShowExport] = useState(false);
+  const [aiChatOpen, setAiChatOpen] = useState(false);
+  const [patternSpec, setPatternSpec] = useState(null);
 
   // Splitter drag state
   const [isDragging, setIsDragging] = useState(false);
@@ -300,7 +303,40 @@ function CanvasLayout() {
         {state.coPilotOpen && (
           <CoPilotSidebar />
         )}
+
+        {/* AI Garment Studio Chat */}
+        {aiChatOpen && (
+          <div className="w-[320px] flex-shrink-0 border-l border-gray-100 h-full">
+            <GarmentAIChat
+              onGlbGenerated={(glbUrl, spec) => {
+                dispatch({ type: "SET_GLB_URL", payload: glbUrl });
+                dispatch({ type: "SET_VIEW_MODE", payload: "3d" });
+                setPatternSpec(spec);
+              }}
+              onSpecUpdate={(spec) => setPatternSpec(spec)}
+            />
+          </div>
+        )}
       </div>
+
+      {/* AI Chat toggle button (floating, bottom-right) */}
+      <button
+        onClick={() => setAiChatOpen(!aiChatOpen)}
+        className={`fixed bottom-16 right-4 z-50 w-12 h-12 rounded-2xl shadow-lg flex items-center justify-center transition-all ${
+          aiChatOpen
+            ? "bg-indigo-600 text-white rotate-0"
+            : "bg-gradient-to-br from-violet-500 to-indigo-600 text-white hover:scale-105"
+        }`}
+        title="AI Garment Studio"
+      >
+        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          {aiChatOpen ? (
+            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+          ) : (
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" />
+          )}
+        </svg>
+      </button>
 
       <CanvasStatusBar onExport={() => setShowExport(true)} />
 

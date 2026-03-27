@@ -89,19 +89,20 @@ export default function GarmentAIChat({ onGlbGenerated, onSpecUpdate, isCollapse
       // Remove the "Analyzing..." status message
       setMessages((prev) => prev.filter((m) => !m.isStatus));
 
-      // Add spec summary message
-      const icon = TYPE_ICONS[spec.garment_type] || "\uD83E\uDDE5";
+      // Add spec summary message (handles both 2D pattern and legacy 3D spec formats)
+      const meta = spec.metadata || spec;
+      const panels = data.panels || spec.panels || [];
+      const icon = TYPE_ICONS[meta.garment_type] || "\uD83E\uDDE5";
       const specSummary = [
-        `${icon} **${spec.name || spec.garment_type}**`,
-        `Fabric: ${spec.fabric_type} | Color: ${spec.color_name || spec.color_hex}`,
-        `Fit: ${spec.fit} | Sleeves: ${Math.round(spec.sleeve_length * 100)}%`,
-        spec.lapel_style !== "none" ? `Lapel: ${spec.lapel_style}` : null,
-        spec.collar_style !== "none" ? `Collar: ${spec.collar_style}` : null,
-        spec.closure !== "pullover" ? `Closure: ${spec.closure.replace("_", " ")}` : null,
-        spec.construction_details?.length ? `Details: ${spec.construction_details.join(", ")}` : null,
+        `${icon} **${meta.name || meta.garment_type}**`,
+        `Fabric: ${meta.fabric_type || "cotton"} | Color: ${meta.color_name || meta.color_hex || "#333"}`,
+        meta.fit ? `Fit: ${meta.fit} | Size: ${meta.size || "M"}` : null,
+        panels.length > 0
+          ? `Panels: ${panels.map(p => `${p.name} (${p.width || "?"}x${p.height || "?"}cm)`).join(", ")}`
+          : null,
       ].filter(Boolean).join("\n");
 
-      addMessage("assistant", specSummary, { spec, template });
+      addMessage("assistant", specSummary, { spec: meta });
 
       // Stage 3: Show result
       if (glbUrl) {
