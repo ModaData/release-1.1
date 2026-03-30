@@ -6,6 +6,11 @@
 
 import { useRef, useEffect, useState, useCallback } from "react";
 
+// Normalize panel data: GarmentFactory uses "vertices", old format uses "points"
+function getPanelPoints(panel) {
+  return panel.vertices || panel.points || [];
+}
+
 // Color palette for different panels
 const PANEL_COLORS = [
   { fill: "rgba(99, 102, 241, 0.15)", stroke: "#6366f1", dot: "#4f46e5" },   // indigo
@@ -59,10 +64,9 @@ export default function PatternEditor2D({
       const resizeHandler = () => {
         const container = canvasRef.current?.parentElement;
         if (container && canvas) {
-          canvas.setDimensions({
-            width: container.clientWidth,
-            height: container.clientHeight,
-          });
+          canvas.width = container.clientWidth;
+          canvas.height = container.clientHeight;
+          canvas.requestRenderAll();
           if (patternSpec) drawPattern(patternSpec);
         }
       };
@@ -104,8 +108,8 @@ export default function PatternEditor2D({
       // Find max panel dimensions for spacing
       let maxPanelW = 0, maxPanelH = 0;
       for (const panel of panels) {
-        const xs = panel.points.map(p => p[0]);
-        const ys = panel.points.map(p => p[1]);
+        const xs = getPanelPoints(panel).map(p => p[0]);
+        const ys = getPanelPoints(panel).map(p => p[1]);
         const w = (Math.max(...xs) - Math.min(...xs)) * CM_TO_PX * zoom;
         const h = (Math.max(...ys) - Math.min(...ys)) * CM_TO_PX * zoom;
         maxPanelW = Math.max(maxPanelW, w);
@@ -145,7 +149,7 @@ export default function PatternEditor2D({
         const effectiveScale = CM_TO_PX * zoom * autoScale;
 
         // Convert panel points to canvas coordinates
-        const canvasPoints = panel.points.map(pt => ({
+        const canvasPoints = getPanelPoints(panel).map(pt => ({
           x: centerX + pt[0] * effectiveScale,
           y: centerY - pt[1] * effectiveScale, // Flip Y (canvas Y is down)
         }));
@@ -225,9 +229,10 @@ export default function PatternEditor2D({
             const newX = (this.left - centerX) / effectiveScale;
             const newY = -(this.top - centerY) / effectiveScale; // Flip Y back
 
-            // Update the point in the spec
-            if (spec.panels[panelIdx] && spec.panels[panelIdx].points[ptIdx]) {
-              spec.panels[panelIdx].points[ptIdx] = [
+            // Update the point in the spec (support both vertices and points)
+            const pointsKey = spec.panels[panelIdx].vertices ? "vertices" : "points";
+            if (spec.panels[panelIdx] && spec.panels[panelIdx][pointsKey]?.[ptIdx]) {
+              spec.panels[panelIdx][pointsKey][ptIdx] = [
                 Math.round(newX * 10) / 10,
                 Math.round(newY * 10) / 10,
               ];
@@ -235,7 +240,7 @@ export default function PatternEditor2D({
               setSelectedPoint({ panel: panelIdx, point: ptIdx });
 
               // Redraw the polygon in place (without full re-render)
-              const updatedPoints = spec.panels[panelIdx].points.map(p => ({
+              const updatedPoints = getPanelPoints(spec.panels[panelIdx]).map(p => ({
                 x: centerX + p[0] * effectiveScale,
                 y: centerY - p[1] * effectiveScale,
               }));
@@ -257,8 +262,8 @@ export default function PatternEditor2D({
         });
 
         // Panel label
-        const xs = panel.points.map(p => p[0]);
-        const ys = panel.points.map(p => p[1]);
+        const xs = getPanelPoints(panel).map(p => p[0]);
+        const ys = getPanelPoints(panel).map(p => p[1]);
         const panelW = Math.round(Math.max(...xs) - Math.min(...xs));
         const panelH = Math.round(Math.max(...ys) - Math.min(...ys));
 
@@ -279,7 +284,7 @@ export default function PatternEditor2D({
           name: panel.name,
           width: panelW,
           height: panelH,
-          pointCount: panel.points.length,
+          pointCount: getPanelPoints(panel).length,
           color: colors.stroke,
         });
       });
@@ -388,9 +393,9 @@ export default function PatternEditor2D({
               {patternSpec.panels[selectedPoint.panel].name} / Point {selectedPoint.point}
             </div>
             <div className="text-[10px] font-mono text-gray-600">
-              x: {patternSpec.panels[selectedPoint.panel].points[selectedPoint.point]?.[0]?.toFixed(1)}cm
+              x: {getPanelPoints(patternSpec.panels[selectedPoint.panel])[selectedPoint.point]?.[0]?.toFixed(1)}cm
               {" "}
-              y: {patternSpec.panels[selectedPoint.panel].points[selectedPoint.point]?.[1]?.toFixed(1)}cm
+              y: {getPanelPoints(patternSpec.panels[selectedPoint.panel])[selectedPoint.point]?.[1]?.toFixed(1)}cm
             </div>
           </div>
         )}

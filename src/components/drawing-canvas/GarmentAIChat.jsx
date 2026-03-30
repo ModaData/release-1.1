@@ -66,8 +66,8 @@ export default function GarmentAIChat({ onGlbGenerated, onSpecUpdate, isCollapse
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           prompt,
-          currentSpec,
-          action: currentSpec ? "edit" : "generate",
+          currentParams: currentSpec?.params || null,
+          currentSpec: currentSpec,
         }),
       });
 
@@ -77,10 +77,10 @@ export default function GarmentAIChat({ onGlbGenerated, onSpecUpdate, isCollapse
       }
 
       const data = await res.json();
-      const { spec, glbUrl, message, template } = data;
+      const { spec, params, glbUrl, message, stitches } = data;
 
-      // Update spec state
-      setCurrentSpec(spec);
+      // Store both spec and params for future edits
+      setCurrentSpec({ ...spec, params });
       onSpecUpdate?.(spec);
 
       // Stage 2: Show parsed spec
@@ -89,17 +89,19 @@ export default function GarmentAIChat({ onGlbGenerated, onSpecUpdate, isCollapse
       // Remove the "Analyzing..." status message
       setMessages((prev) => prev.filter((m) => !m.isStatus));
 
-      // Add spec summary message (handles both 2D pattern and legacy 3D spec formats)
-      const meta = spec.metadata || spec;
+      // Add spec summary message
+      const meta = spec.metadata || {};
       const panels = data.panels || spec.panels || [];
+      const stitchCount = (stitches || spec.stitches || []).length;
       const icon = TYPE_ICONS[meta.garment_type] || "\uD83E\uDDE5";
       const specSummary = [
-        `${icon} **${meta.name || meta.garment_type}**`,
-        `Fabric: ${meta.fabric_type || "cotton"} | Color: ${meta.color_name || meta.color_hex || "#333"}`,
+        `${icon} **${meta.name || meta.garment_type || "Garment"}**`,
+        `Fabric: ${meta.fabric_type || "cotton"} | Color: ${meta.color || "#333"}`,
         meta.fit ? `Fit: ${meta.fit} | Size: ${meta.size || "M"}` : null,
         panels.length > 0
-          ? `Panels: ${panels.map(p => `${p.name} (${p.width || "?"}x${p.height || "?"}cm)`).join(", ")}`
+          ? `Panels: ${panels.map(p => `${p.name} (${p.width || p.width_cm || "?"}x${p.height || p.height_cm || "?"}cm)`).join(", ")}`
           : null,
+        stitchCount > 0 ? `Seams: ${stitchCount} construction stitches` : null,
       ].filter(Boolean).join("\n");
 
       addMessage("assistant", specSummary, { spec: meta });

@@ -105,6 +105,32 @@ async def health():
     return {"status": "ok", "blender": BLENDER_BIN}
 
 
+# ── POST /api/generate-pattern — GarmentFactory: params → 2D panels + stitches ──
+@app.post("/api/generate-pattern")
+async def generate_pattern(request: Request):
+    """Generate precise 2D pattern panels from parametric factory parameters.
+    Input: JSON with garment_type, size, fit, fabric_type, color, etc.
+    Output: GarmentSpec JSON with panels (vertices, edges), stitches, measurements.
+    No Blender needed — pure Python geometry.
+    """
+    try:
+        from garment_schema import GarmentFactory
+        params = await request.json()
+        garment_type = params.get("garment_type", "tshirt")
+
+        factory = GarmentFactory()
+        spec = factory.create(garment_type, **params)
+        result = spec.to_dict()
+
+        panel_names = [p["name"] for p in result["panels"]]
+        print(f"[factory] Generated {garment_type}: {len(result['panels'])} panels ({', '.join(panel_names)}), {len(result['stitches'])} stitches")
+
+        return JSONResponse(content=result)
+    except Exception as e:
+        print(f"[factory] Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ── POST /api/generate-from-spec — Text-to-3D parametric garment generation ──
 @app.post("/api/generate-from-spec")
 async def generate_from_spec(request: Request):

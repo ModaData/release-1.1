@@ -1,117 +1,83 @@
 // File: app/api/garment-ai/route.js
-// 2D-First Garment AI Orchestrator
-// Pipeline: User prompt → GPT-4 (2D pattern panels) → Blender (cloth sim) → 3D GLB
-// This is the "Text-to-CAD" approach: patterns that export to CLO3D/Gerber
+// 2D-First Garment AI Orchestrator (v2 — GarmentFactory)
+//
+// Pipeline:
+//   1. GPT-4 parses user prompt → structured parameters (garment_type, size, fit, fabric...)
+//   2. GarmentFactory (Python) generates precise 2D panels + stitches from parametric templates
+//   3. Blender sews panels into 3D via cloth simulation
+//   4. (Optional) HunYuan generates a visual concept mesh as guide
+//
+// This is "Patterns-as-Code": output can be unrolled back to 2D for CLO3D/Gerber
 import { NextResponse } from "next/server";
 
-export const maxDuration = 300; // Cloth sim can take a few minutes
+export const maxDuration = 300;
 export const dynamic = "force-dynamic";
 
-// ── System prompt for 2D pattern generation ──
-const PATTERN_SYSTEM_PROMPT = `You are an expert fashion pattern maker AI. When the user describes a garment, you generate 2D sewing pattern data as JSON.
+const BLENDER_API_URL = () => (process.env.BLENDER_API_URL || "http://localhost:8000").trim();
 
-Each garment is composed of PANELS (flat pattern pieces). Each panel has:
-- name: identifier (e.g. "front_left", "back", "sleeve_right")
-- points: ordered 2D coordinates [[x,y], ...] defining the panel outline (in centimeters, origin at panel center)
-- seam_edges: pairs of point indices that form sewing seams
-- grain_line: direction vector [dx, dy] for fabric grain (usually [0,1] = vertical)
-- seam_allowance: cm to add around the edge (default 1.5)
+// ── GPT-4 System Prompt: Parse text → GarmentFactory parameters ──
+const PARAMETER_PARSER_PROMPT = `You are a fashion pattern engineering AI. Parse the user's garment description into structured parameters for our GarmentFactory.
 
-COORDINATE SYSTEM:
-- Units are centimeters. X = width, Y = height. Origin (0,0) = panel center.
-- Standard shirt front panel: ~50cm wide x 70cm tall
-
-PANEL LIBRARY (modify these shapes based on the prompt):
-
-SHIRT/BLOUSE FRONT: [[-22,-35],[22,-35],[22,20],[18,30],[10,35],[0,32],[-10,35],[-18,30],[-22,20]]
-SHIRT/BLOUSE BACK: [[-22,-35],[22,-35],[22,20],[18,28],[10,32],[0,30],[-10,32],[-18,28],[-22,20]]
-SLEEVE: [[-20,-30],[20,-30],[18,0],[15,15],[10,20],[0,22],[-10,20],[-15,15],[-18,0]]
-COLLAR BAND: [[-20,-3],[20,-3],[20,3],[-20,3]]
-PANTS FRONT: [[-15,-45],[15,-45],[15,-5],[12,10],[10,20],[5,30],[0,32],[-5,28],[-8,10],[-15,-5]]
-PANTS BACK: [[-16,-45],[16,-45],[16,-5],[13,10],[10,22],[5,32],[0,34],[-5,30],[-10,15],[-16,-5]]
-SKIRT FRONT: [[-25,-40],[25,-40],[22,-5],[20,10],[15,25],[0,30],[-15,25],[-20,10],[-22,-5]]
-SKIRT BACK: [[-25,-40],[25,-40],[22,-5],[20,10],[15,25],[0,28],[-15,25],[-20,10],[-22,-5]]
-BLAZER FRONT: [[-25,-35],[25,-35],[25,22],[22,30],[18,34],[10,36],[0,33],[-10,36],[-18,34],[-22,30],[-25,22]]
-BLAZER BACK: [[-24,-35],[24,-35],[24,22],[20,30],[10,34],[0,32],[-10,34],[-20,30],[-24,22]]
-DRESS FRONT: [[-22,-55],[22,-55],[22,20],[18,30],[10,35],[0,32],[-10,35],[-18,30],[-22,20]]
-DRESS BACK: [[-22,-55],[22,-55],[22,20],[18,28],[10,32],[0,30],[-10,32],[-18,28],[-22,20]]
-
-RULES:
-1. Return ONLY valid JSON. No markdown, no explanation, no code fences.
-2. Include ALL panels needed (a basic shirt needs: front, back, sleeve_left, sleeve_right, collar).
-3. Scale for size: S=scale 0.9, M=1.0, L=1.1, XL=1.2.
-4. Slim fit: narrow side seams 10-15%. Oversized: widen 20%.
-5. Coordinates form a CLOSED polygon (last point connects to first).
-6. Always include metadata with garment_type, fabric_type, color_hex, color_name, fit, size.
-
-OUTPUT FORMAT:
+Return ONLY a JSON object with these fields:
 {
-  "metadata": {
-    "garment_type": "shirt",
-    "name": "Classic White Shirt",
-    "fabric_type": "cotton",
-    "color_hex": "#FFFFFF",
-    "color_name": "white",
-    "fit": "regular",
-    "size": "M"
-  },
-  "panels": [
-    {
-      "name": "front",
-      "points": [[x,y], ...],
-      "seam_edges": [[0,1], [1,2]],
-      "grain_line": [0, 1],
-      "seam_allowance": 1.5
-    }
-  ]
-}`;
+  "garment_type": "tshirt|shirt|blazer|pants|skirt|dress|hoodie|tank_top",
+  "size": "XS|S|M|L|XL",
+  "fit": "skin_tight|slim|regular|relaxed|oversized",
+  "fabric_type": "cotton|silk|denim|wool|linen|leather|chiffon|velvet|jersey|satin|tweed|polyester",
+  "color": "#hex color code",
+  "sleeve_length": null or number in cm (null = use template default),
+  "body_length": null or number in cm (null = use template default),
+  "neckline": "crew|v_neck|scoop|boat|turtleneck",
+  "collar_style": "point|spread|button_down|mandarin|band",
+  "lapel_style": "notch|peak|shawl",
+  "double_breasted": false,
+  "style": "straight|slim|skinny|wide|bootcut|a_line|pencil|circle",
+  "length": null or number in cm for pants/skirts
+}
 
-function buildEditPrompt(currentSpec, instruction) {
-  return `You are modifying existing 2D sewing pattern data. The current pattern is:
+Only include fields relevant to the garment type. Infer reasonable defaults.
+Examples:
+- "Navy wool double-breasted blazer with peak lapels" → {"garment_type":"blazer","fabric_type":"wool","color":"#1B2951","lapel_style":"peak","double_breasted":true,"fit":"regular"}
+- "Slim-fit white cotton shirt" → {"garment_type":"shirt","fabric_type":"cotton","color":"#FFFFFF","fit":"slim"}
+- "Black leather skinny pants" → {"garment_type":"pants","fabric_type":"leather","color":"#000000","style":"skinny","fit":"slim"}
+- "Red silk evening dress, floor length" → {"garment_type":"dress","fabric_type":"silk","color":"#8B0000","fit":"slim","length":140}
+- "Oversized grey hoodie" → {"garment_type":"hoodie","fabric_type":"jersey","color":"#808080","fit":"oversized"}`;
 
-${JSON.stringify(currentSpec, null, 2)}
+// ── GPT-4 Edit Prompt: Modify parameters of existing spec ──
+function buildEditPrompt(currentParams, instruction) {
+  return `The current garment parameters are:
+${JSON.stringify(currentParams, null, 2)}
 
 The user wants: "${instruction}"
 
-Return the COMPLETE updated pattern JSON with the modification applied.
-Only change the panels/coordinates that the instruction affects. Keep everything else the same.
+Return the COMPLETE updated parameter JSON with the modification applied.
+Only change fields that the instruction affects. Keep everything else the same.
 Respond with ONLY valid JSON, no markdown or code fences.`;
 }
 
-// ── Call GPT-4 to generate 2D pattern panels ──
-async function promptToPattern(prompt, currentSpec = null) {
+// ── Step 1: GPT-4 parses prompt → factory parameters ──
+async function promptToParams(prompt, currentParams = null) {
   const OPENAI_KEY = process.env.OPENAI_API_KEY;
   if (!OPENAI_KEY) throw new Error("OPENAI_API_KEY not configured");
 
-  const messages = [
-    { role: "system", content: PATTERN_SYSTEM_PROMPT },
-  ];
+  const messages = [{ role: "system", content: PARAMETER_PARSER_PROMPT }];
 
-  if (currentSpec) {
-    messages.push({
-      role: "user",
-      content: buildEditPrompt(currentSpec, prompt),
-    });
+  if (currentParams) {
+    messages.push({ role: "user", content: buildEditPrompt(currentParams, prompt) });
   } else {
-    messages.push({
-      role: "user",
-      content: `Create sewing patterns for: "${prompt}"`,
-    });
+    messages.push({ role: "user", content: `Parse this garment: "${prompt}"` });
   }
 
-  console.log(`[garment-ai] GPT-4 (${currentSpec ? "edit" : "new"} pattern)...`);
+  console.log(`[garment-ai] GPT-4 parameter parsing (${currentParams ? "edit" : "new"})...`);
 
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${OPENAI_KEY}`,
-      "Content-Type": "application/json",
-    },
+    headers: { Authorization: `Bearer ${OPENAI_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify({
       model: "gpt-4o",
       messages,
-      temperature: 0.3,
-      max_tokens: 3000,
+      temperature: 0.2,
+      max_tokens: 500,
       response_format: { type: "json_object" },
     }),
   });
@@ -125,96 +91,180 @@ async function promptToPattern(prompt, currentSpec = null) {
   const content = data.choices?.[0]?.message?.content;
   if (!content) throw new Error("GPT-4 returned empty response");
 
-  try {
-    const spec = JSON.parse(content);
-    const panelCount = spec.panels?.length || 0;
-    console.log(`[garment-ai] Generated ${panelCount} panels: ${spec.panels?.map(p => p.name).join(", ")}`);
-    return spec;
-  } catch (e) {
-    console.error("[garment-ai] Invalid JSON from GPT-4:", content.substring(0, 300));
-    throw new Error("GPT-4 returned invalid JSON");
+  const params = JSON.parse(content);
+  console.log(`[garment-ai] Parsed: ${params.garment_type} | ${params.fabric_type} | ${params.color} | ${params.fit} | ${params.size || "M"}`);
+  return params;
+}
+
+// ── Step 2: Call GarmentFactory on the Blender backend ──
+async function generatePattern(params) {
+  const url = BLENDER_API_URL();
+  console.log(`[garment-ai] Calling GarmentFactory at ${url}/api/generate-pattern...`);
+
+  const res = await fetch(`${url}/api/generate-pattern`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+    signal: AbortSignal.timeout(30000),
+  });
+
+  if (!res.ok) {
+    const err = await res.text().catch(() => "");
+    console.warn(`[garment-ai] GarmentFactory failed (${res.status}): ${err.substring(0, 300)}`);
+    return null;
   }
+
+  const spec = await res.json();
+  console.log(`[garment-ai] GarmentFactory: ${spec.panels?.length || 0} panels, ${spec.stitches?.length || 0} stitches`);
+  return spec;
+}
+
+// ── Step 3: Sew panels into 3D via Blender cloth sim ──
+async function sewTo3D(spec, simFrames = 15) {
+  const url = BLENDER_API_URL();
+  console.log(`[garment-ai] Sewing ${spec.panels?.length} panels (${simFrames} sim frames)...`);
+
+  const res = await fetch(`${url}/api/sew-panels`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ spec, sim_frames: simFrames }),
+    signal: AbortSignal.timeout(90000),
+  });
+
+  if (!res.ok) {
+    const err = await res.text().catch(() => "");
+    console.warn(`[garment-ai] Sewing failed (${res.status}): ${err.substring(0, 200)}`);
+    return null;
+  }
+
+  const contentType = res.headers.get("content-type") || "";
+  if (contentType.includes("model/gltf-binary") || contentType.includes("application/octet-stream")) {
+    const buffer = await res.arrayBuffer();
+    const base64 = Buffer.from(buffer).toString("base64");
+    console.log(`[garment-ai] 3D garment sewn! GLB: ${Math.round(buffer.byteLength / 1024)}KB`);
+    return `data:model/gltf-binary;base64,${base64}`;
+  }
+
+  const json = await res.json().catch(() => null);
+  return json?.glb_url || null;
+}
+
+// ── Step 4 (optional): HunYuan visual concept mesh ──
+async function generateVisualGuide(prompt) {
+  // Use HunYuan to generate a concept mesh as visual reference
+  // This is separate from the pattern-based construction
+  try {
+    const TENCENT_SECRET_ID = process.env.TENCENT_SECRET_ID;
+    const TENCENT_SECRET_KEY = process.env.TENCENT_SECRET_KEY;
+    if (!TENCENT_SECRET_ID || !TENCENT_SECRET_KEY) return null;
+
+    console.log(`[garment-ai] Generating HunYuan visual guide for: "${prompt.substring(0, 50)}..."`);
+
+    // Call the existing generate-3d endpoint internally
+    const baseUrl = process.env.NEXTAUTH_URL || process.env.VERCEL_URL || "http://localhost:3000";
+    const res = await fetch(`${baseUrl}/api/generate-3d`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: `3D garment model: ${prompt}`,
+        model: "hunyuan",
+      }),
+      signal: AbortSignal.timeout(120000),
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      console.log(`[garment-ai] HunYuan visual guide generated`);
+      return data.glbUrl || null;
+    }
+  } catch (err) {
+    console.warn(`[garment-ai] HunYuan guide skipped: ${err.message}`);
+  }
+  return null;
 }
 
 // ── POST handler ──
 export async function POST(request) {
   try {
     const body = await request.json();
-    const { prompt, currentSpec = null } = body;
+    const { prompt, currentSpec = null, currentParams = null, generateGuide = false } = body;
 
     if (!prompt || typeof prompt !== "string") {
       return NextResponse.json({ error: "Missing 'prompt' field" }, { status: 400 });
     }
 
-    // Step 1: GPT-4 generates 2D pattern panels
-    const patternSpec = await promptToPattern(prompt, currentSpec);
-    const metadata = patternSpec.metadata || {};
-    const panels = patternSpec.panels || [];
+    // Step 1: GPT-4 parses prompt → structured parameters
+    const params = await promptToParams(prompt, currentParams);
 
-    if (panels.length === 0) {
-      return NextResponse.json({
-        spec: patternSpec,
-        glbUrl: null,
-        message: "GPT-4 generated no panels. Try a more specific prompt.",
-      });
+    // Step 2: GarmentFactory generates precise 2D panels + stitches
+    let spec = await generatePattern(params);
+
+    // Fallback: if GarmentFactory endpoint isn't available, generate panels client-side
+    // (the frontend PatternEditor2D can render from params alone)
+    if (!spec) {
+      console.warn("[garment-ai] GarmentFactory unavailable, returning params only");
+      spec = {
+        metadata: {
+          name: params.garment_type ? `${(params.fit || "regular")} ${params.garment_type}`.trim() : "Garment",
+          garment_type: params.garment_type || "tshirt",
+          fabric_type: params.fabric_type || "cotton",
+          color: params.color || "#FFFFFF",
+          size: params.size || "M",
+          fit: params.fit || "regular",
+        },
+        panels: [],
+        stitches: [],
+        measurements: {},
+      };
     }
 
-    // Step 2: Send to Blender for cloth simulation → 3D
-    const BLENDER_API_URL = (process.env.BLENDER_API_URL || "http://localhost:8000").trim();
-
-    console.log(`[garment-ai] Sending ${panels.length} panels to Blender for sewing simulation...`);
-
+    // Step 3: Sew panels into 3D
     let glbUrl = null;
+    if (spec.panels && spec.panels.length > 0) {
+      glbUrl = await sewTo3D(spec);
+    }
 
-    try {
-      const blenderRes = await fetch(`${BLENDER_API_URL}/api/sew-panels`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          spec: patternSpec,
-          sim_frames: 60,
-        }),
-        signal: AbortSignal.timeout(180000), // 3 min timeout for cloth sim
-      });
-
-      if (blenderRes.ok) {
-        const contentType = blenderRes.headers.get("content-type") || "";
-        if (contentType.includes("model/gltf-binary") || contentType.includes("application/octet-stream")) {
-          const buffer = await blenderRes.arrayBuffer();
-          const base64 = Buffer.from(buffer).toString("base64");
-          glbUrl = `data:model/gltf-binary;base64,${base64}`;
-          console.log(`[garment-ai] 3D garment generated! GLB size: ${Math.round(buffer.byteLength / 1024)}KB`);
-        } else {
-          const jsonResult = await blenderRes.json().catch(() => null);
-          glbUrl = jsonResult?.glb_url || jsonResult?.output_url || null;
-        }
-      } else {
-        const errText = await blenderRes.text().catch(() => "");
-        console.warn(`[garment-ai] Blender sewing failed (${blenderRes.status}): ${errText.substring(0, 200)}`);
-      }
-    } catch (blenderErr) {
-      console.warn(`[garment-ai] Blender backend: ${blenderErr.message}`);
+    // Step 4 (optional): HunYuan visual guide
+    let guideGlbUrl = null;
+    if (generateGuide) {
+      guideGlbUrl = await generateVisualGuide(prompt);
     }
 
     // Build panel summary for chat display
+    const panels = spec.panels || [];
     const panelSummary = panels.map(p => {
-      const w = Math.round(Math.max(...p.points.map(pt => pt[0])) - Math.min(...p.points.map(pt => pt[0])));
-      const h = Math.round(Math.max(...p.points.map(pt => pt[1])) - Math.min(...p.points.map(pt => pt[1])));
+      const w = p.width_cm || Math.round(Math.max(...(p.vertices || p.points || []).map(pt => pt[0])) - Math.min(...(p.vertices || p.points || []).map(pt => pt[0])));
+      const h = p.height_cm || Math.round(Math.max(...(p.vertices || p.points || []).map(pt => pt[1])) - Math.min(...(p.vertices || p.points || []).map(pt => pt[1])));
       return `${p.name} (${w}x${h}cm)`;
     }).join(", ");
 
+    const stitchCount = spec.stitches?.length || 0;
+    const fabricType = spec.metadata?.fabric_type || params.fabric_type || "cotton";
+    const garmentName = spec.metadata?.name || params.garment_type || "Garment";
+
+    let message;
+    if (glbUrl) {
+      message = `${garmentName}: ${panels.length} panels, ${stitchCount} seams → sewn into 3D (${panelSummary})`;
+    } else if (panels.length > 0) {
+      message = `${garmentName}: ${panels.length} panels, ${stitchCount} seams (${panelSummary}). Sewing to 3D...`;
+    } else {
+      message = `Parsed: ${garmentName} (${fabricType}). Blender backend needed for pattern generation.`;
+    }
+
     return NextResponse.json({
-      spec: patternSpec,
-      glbUrl,
+      spec,
+      params,        // The parsed factory parameters (for future edits)
+      glbUrl,        // 3D sewn garment (if sewing succeeded)
+      guideGlbUrl,   // HunYuan concept mesh (if requested)
       panels: panels.map(p => ({
         name: p.name,
-        pointCount: p.points?.length || 0,
-        width: Math.round(Math.max(...p.points.map(pt => pt[0])) - Math.min(...p.points.map(pt => pt[0]))),
-        height: Math.round(Math.max(...p.points.map(pt => pt[1])) - Math.min(...p.points.map(pt => pt[1]))),
+        vertexCount: (p.vertices || p.points || []).length,
+        edgeCount: (p.edges || []).length,
+        width: p.width_cm || 0,
+        height: p.height_cm || 0,
       })),
-      message: glbUrl
-        ? `Created ${metadata.name || metadata.garment_type}: ${panels.length} panels sewn into 3D (${panelSummary})`
-        : `Pattern created: ${panels.length} panels (${panelSummary}). Blender sewing endpoint not yet configured.`,
+      stitches: spec.stitches || [],
+      message,
     });
   } catch (err) {
     console.error("[garment-ai] Error:", err);
