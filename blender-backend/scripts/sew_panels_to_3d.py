@@ -91,7 +91,8 @@ def create_panel_mesh(panel_data, cm_to_m=0.01):
         The created Blender object.
     """
     name = panel_data.get("name", "Panel")
-    points = panel_data.get("points", [])
+    # Support both v1 ("points") and v2 GarmentFactory ("vertices") schemas
+    points = panel_data.get("vertices", panel_data.get("points", []))
 
     if len(points) < 3:
         print(f"[sew] Warning: Panel '{name}' has < 3 points, skipping")
@@ -432,7 +433,7 @@ def main(spec, output_path, sim_frames=60):
     metadata = spec.get("metadata", {})
     panels_data = spec.get("panels", [])
     fabric_type = metadata.get("fabric_type", "cotton")
-    color_hex = metadata.get("color_hex", "#333333")
+    color_hex = metadata.get("color", metadata.get("color_hex", "#333333"))
 
     if not panels_data:
         print("[sew] ERROR: No panels in spec")

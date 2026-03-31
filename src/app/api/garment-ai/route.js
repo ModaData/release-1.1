@@ -9,6 +9,7 @@
 //
 // This is "Patterns-as-Code": output can be unrolled back to 2D for CLO3D/Gerber
 import { NextResponse } from "next/server";
+import { GarmentFactory } from "@/lib/garment-factory";
 
 export const maxDuration = 300;
 export const dynamic = "force-dynamic";
@@ -96,26 +97,14 @@ async function promptToParams(prompt, currentParams = null) {
   return params;
 }
 
-// ── Step 2: Call GarmentFactory on the Blender backend ──
-async function generatePattern(params) {
-  const url = BLENDER_API_URL();
-  console.log(`[garment-ai] Calling GarmentFactory at ${url}/api/generate-pattern...`);
+// ── Step 2: GarmentFactory runs locally in JS (no backend needed!) ──
+function generatePattern(params) {
+  console.log(`[garment-ai] GarmentFactory (local JS): ${params.garment_type} | ${params.fit} | ${params.size}`);
 
-  const res = await fetch(`${url}/api/generate-pattern`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(params),
-    signal: AbortSignal.timeout(30000),
-  });
+  const factory = new GarmentFactory();
+  const spec = factory.create(params.garment_type || "tshirt", params);
 
-  if (!res.ok) {
-    const err = await res.text().catch(() => "");
-    console.warn(`[garment-ai] GarmentFactory failed (${res.status}): ${err.substring(0, 300)}`);
-    return null;
-  }
-
-  const spec = await res.json();
-  console.log(`[garment-ai] GarmentFactory: ${spec.panels?.length || 0} panels, ${spec.stitches?.length || 0} stitches`);
+  console.log(`[garment-ai] Generated: ${spec.panels?.length || 0} panels, ${spec.stitches?.length || 0} stitches`);
   return spec;
 }
 
@@ -196,27 +185,8 @@ export async function POST(request) {
     // Step 1: GPT-4 parses prompt → structured parameters
     const params = await promptToParams(prompt, currentParams);
 
-    // Step 2: GarmentFactory generates precise 2D panels + stitches
-    let spec = await generatePattern(params);
-
-    // Fallback: if GarmentFactory endpoint isn't available, generate panels client-side
-    // (the frontend PatternEditor2D can render from params alone)
-    if (!spec) {
-      console.warn("[garment-ai] GarmentFactory unavailable, returning params only");
-      spec = {
-        metadata: {
-          name: params.garment_type ? `${(params.fit || "regular")} ${params.garment_type}`.trim() : "Garment",
-          garment_type: params.garment_type || "tshirt",
-          fabric_type: params.fabric_type || "cotton",
-          color: params.color || "#FFFFFF",
-          size: params.size || "M",
-          fit: params.fit || "regular",
-        },
-        panels: [],
-        stitches: [],
-        measurements: {},
-      };
-    }
+    // Step 2: GarmentFactory generates precise 2D panels + stitches (runs locally, no backend!)
+    const spec = generatePattern(params);
 
     // Step 3: Sew panels into 3D
     let glbUrl = null;
@@ -248,7 +218,7 @@ export async function POST(request) {
     } else if (panels.length > 0) {
       message = `${garmentName}: ${panels.length} panels, ${stitchCount} seams (${panelSummary}). Sewing to 3D...`;
     } else {
-      message = `Parsed: ${garmentName} (${fabricType}). Blender backend needed for pattern generation.`;
+      message = `${garmentName} (${fabricType}). Pattern generation failed — try a different description.`;
     }
 
     return NextResponse.json({
