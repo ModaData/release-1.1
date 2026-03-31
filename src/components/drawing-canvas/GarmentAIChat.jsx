@@ -106,14 +106,45 @@ export default function GarmentAIChat({ onGlbGenerated, onSpecUpdate, isCollapse
 
       addMessage("assistant", specSummary, { spec: meta });
 
-      // Stage 3: Show result
+      // Stage 3: Blender-MCP — generate 3D via bpy code
       if (glbUrl) {
+        // Sewing pipeline returned a GLB directly
         setStage("done");
         onGlbGenerated?.(glbUrl, spec);
-        addMessage("assistant", `3D model generated! You can now edit it in the viewer, or describe changes like "make the sleeves shorter" or "change to red silk".`);
+        addMessage("assistant", `3D model generated! Describe changes like "make sleeves shorter" or "change to red silk".`);
       } else {
-        setStage("done");
-        addMessage("assistant", message || "Garment spec created. Blender template generation is being set up.");
+        // Try Blender-MCP: GPT-4 → bpy code → Blender → GLB
+        addMessage("assistant", "Generating 3D model in Blender...", { isStatus: true });
+        try {
+          const mcpRes = await fetch("/api/blender-mcp", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              prompt,
+              previousCode: currentSpec?.blenderCode || null,
+            }),
+          });
+
+          const mcpData = await mcpRes.json();
+          setMessages((prev) => prev.filter((m) => !m.isStatus));
+
+          if (mcpData.glbUrl) {
+            setStage("done");
+            setCurrentSpec((prev) => ({ ...prev, blenderCode: mcpData.code }));
+            onGlbGenerated?.(mcpData.glbUrl, spec);
+            addMessage("assistant", `3D garment created in Blender! You can describe changes to refine it.`);
+          } else {
+            setStage("done");
+            const errorHint = mcpData.error?.includes("404") || mcpData.error?.includes("fetch")
+              ? "Start the RunPod pod to enable 3D generation."
+              : mcpData.error || "Blender execution failed.";
+            addMessage("assistant", `2D patterns ready (${panels.length} panels). ${errorHint}`);
+          }
+        } catch (mcpErr) {
+          setMessages((prev) => prev.filter((m) => !m.isStatus));
+          setStage("done");
+          addMessage("assistant", `2D patterns created (${panels.length} panels). Start the RunPod pod for 3D generation.`);
+        }
       }
     } catch (err) {
       setStage("error");

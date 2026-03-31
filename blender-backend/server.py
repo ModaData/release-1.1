@@ -234,6 +234,104 @@ async def sew_panels(request: Request):
     return FileResponse(output_path, media_type="model/gltf-binary", filename="garment_sewn.glb")
 
 
+# ── POST /api/blender-execute — Blender-Claude MCP-style: run bpy code → GLB ──
+@app.post("/api/blender-execute")
+async def blender_execute(request: Request):
+    """Execute arbitrary Blender Python code and return the result as GLB.
+
+    This is the MCP bridge: GPT-4 generates bpy code, this endpoint runs it
+    in a fresh Blender subprocess, and returns the resulting scene as GLB.
+
+    Input JSON:
+        code: str — Python code using bpy, bmesh, mathutils
+        export_format: str — "glb" (default) or "obj"
+
+    The code MUST create objects in the scene. The endpoint auto-exports
+    everything visible as GLB after execution.
+    """
+    body = await request.json()
+    code = body.get("code", "")
+    if not code or not code.strip():
+        raise HTTPException(status_code=400, detail="No 'code' provided")
+
+    job_id = str(uuid.uuid4())[:8]
+    output_path = OUTPUT_DIR / f"{job_id}_exec.glb"
+    script_path = Path(f"/tmp/blender-work/{job_id}_exec.py")
+    log_path = Path(f"/tmp/blender-work/{job_id}_log.txt")
+
+    # Wrap user code with auto-export boilerplate
+    wrapped_code = f'''
+import bpy
+import sys
+import os
+
+# Clear default scene
+bpy.ops.object.select_all(action="SELECT")
+bpy.ops.object.delete()
+for block in bpy.data.meshes:
+    if not block.users:
+        bpy.data.meshes.remove(block)
+
+# ═══ USER CODE START ═══
+{code}
+# ═══ USER CODE END ═══
+
+# Auto-export: select all mesh objects and export as GLB
+output_path = "{str(output_path).replace(chr(92), '/')}"
+bpy.ops.object.select_all(action="DESELECT")
+export_objects = [o for o in bpy.data.objects if o.type == "MESH" and o.visible_get()]
+if not export_objects:
+    print("[exec] WARNING: No mesh objects to export")
+    sys.exit(1)
+
+for obj in export_objects:
+    obj.select_set(True)
+bpy.context.view_layer.objects.active = export_objects[0]
+
+bpy.ops.export_scene.gltf(
+    filepath=output_path,
+    export_format="GLB",
+    use_selection=True,
+    export_apply=True,
+    export_materials="EXPORT",
+    export_normals=True,
+)
+print(f"[exec] Exported {{len(export_objects)}} objects to {{output_path}}")
+'''
+
+    with open(script_path, "w") as f:
+        f.write(wrapped_code)
+
+    print(f"[blender-exec] Running code ({len(code)} chars, job {job_id})...")
+
+    cmd = [BLENDER_BIN, "--background", "--python", str(script_path)]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+
+    # Save log
+    with open(log_path, "w") as f:
+        f.write(f"=== STDOUT ===\n{result.stdout}\n=== STDERR ===\n{result.stderr}")
+
+    # Clean up script
+    try:
+        script_path.unlink()
+    except Exception:
+        pass
+
+    if result.returncode != 0:
+        error_msg = result.stderr[-500:] if result.stderr else result.stdout[-500:]
+        print(f"[blender-exec] FAILED: {error_msg}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Blender execution failed: {error_msg}"
+        )
+
+    if not output_path.exists():
+        raise HTTPException(status_code=500, detail="Code ran but produced no mesh objects")
+
+    print(f"[blender-exec] Success! GLB: {output_path.stat().st_size / 1024:.1f}KB")
+    return FileResponse(output_path, media_type="model/gltf-binary", filename="blender_result.glb")
+
+
 # ── POST /api/auto-fix — One-click repair → remesh → smooth pipeline ──
 @app.post("/api/auto-fix")
 async def auto_fix(
