@@ -8,6 +8,7 @@ Endpoints: auto-fix, repair-mesh, clean-mesh, subdivide, smooth, apply-cloth-phy
 """
 
 import os
+import sys
 import uuid
 import subprocess
 import tempfile
@@ -232,6 +233,187 @@ async def sew_panels(request: Request):
         raise HTTPException(status_code=500, detail="Blender produced no output")
 
     return FileResponse(output_path, media_type="model/gltf-binary", filename="garment_sewn.glb")
+
+
+# ── POST /api/export-dxf — Export 2D patterns as DXF for CLO3D/Gerber ──
+@app.post("/api/export-dxf")
+async def export_dxf(request: Request):
+    """Export 2D pattern panels as a DXF file for CLO3D / Gerber import.
+    Input: JSON with 'spec' (GarmentSpec containing panels with vertices in cm).
+    Output: DXF file (AutoCAD 2010 / AC1024).
+    """
+    body = await request.json()
+    spec = body.get("spec", body)
+    panels = spec.get("panels", [])
+
+    if not panels:
+        raise HTTPException(status_code=400, detail="No panels in spec")
+
+    job_id = str(uuid.uuid4())[:8]
+    output_path = OUTPUT_DIR / f"{job_id}_pattern.dxf"
+
+    # DXF export is pure Python — no Blender subprocess needed
+    sys.path.insert(0, str(SCRIPTS_DIR.parent))
+    from scripts.export_dxf import write_dxf
+
+    try:
+        write_dxf(str(output_path), panels)
+    except Exception as e:
+        print(f"[dxf] Export failed: {e}")
+        raise HTTPException(status_code=500, detail=f"DXF export failed: {e}")
+
+    if not output_path.exists():
+        raise HTTPException(status_code=500, detail="DXF export produced no output")
+
+    panel_names = [p.get("name", "?") for p in panels]
+    print(f"[dxf] Exported {len(panels)} panels ({', '.join(panel_names)}) → {output_path}")
+
+    return FileResponse(
+        output_path,
+        media_type="application/dxf",
+        filename="garment_pattern.dxf",
+        headers={"Content-Disposition": "attachment; filename=garment_pattern.dxf"},
+    )
+
+
+# ── POST /api/export-svg — Export 2D patterns as SVG ──
+@app.post("/api/export-svg")
+async def export_svg(request: Request):
+    """Export 2D pattern panels as an SVG file with measurements and annotations.
+    Input: JSON with 'spec' (GarmentSpec containing panels with vertices in cm).
+    Output: SVG file.
+    """
+    body = await request.json()
+    spec = body.get("spec", body)
+    panels = spec.get("panels", [])
+
+    if not panels:
+        raise HTTPException(status_code=400, detail="No panels in spec")
+
+    job_id = str(uuid.uuid4())[:8]
+    output_path = OUTPUT_DIR / f"{job_id}_pattern.svg"
+
+    # SVG export is pure Python — no Blender subprocess needed
+    sys.path.insert(0, str(SCRIPTS_DIR.parent))
+    from scripts.export_svg import write_svg
+
+    try:
+        write_svg(str(output_path), panels)
+    except Exception as e:
+        print(f"[svg] Export failed: {e}")
+        raise HTTPException(status_code=500, detail=f"SVG export failed: {e}")
+
+    if not output_path.exists():
+        raise HTTPException(status_code=500, detail="SVG export produced no output")
+
+    panel_names = [p.get("name", "?") for p in panels]
+    print(f"[svg] Exported {len(panels)} panels ({', '.join(panel_names)}) → {output_path}")
+
+    return FileResponse(
+        output_path,
+        media_type="image/svg+xml",
+        filename="garment_pattern.svg",
+    )
+
+
+# ── POST /api/clo3d/simulate — CLO3D-compatible cloth simulation ──
+@app.post("/api/clo3d/simulate")
+async def clo3d_simulate(request: Request):
+    """CLO3D-compatible simulation endpoint.
+    Input: JSON with 'panels' (2D pattern data), 'fabric_assignments' (fabric per panel),
+           optional 'sim_frames' (default 30).
+    Output: GLB file with draped garment.
+
+    Uses clo3d_api internally: creates patterns, assigns fabrics, runs cloth sim,
+    exports GLB.
+    """
+    body = await request.json()
+    panels = body.get("panels", [])
+    fabric_assignments = body.get("fabric_assignments", {})
+    sim_frames = min(body.get("sim_frames", 30), 60)
+    default_fabric = body.get("fabric_type", "cotton")
+    default_color = body.get("color_hex", "#808080")
+
+    if not panels:
+        raise HTTPException(status_code=400, detail="No panels provided")
+
+    # Build a Blender script that uses clo3d_api
+    job_id = str(uuid.uuid4())[:8]
+    output_path = OUTPUT_DIR / f"{job_id}_clo3d_sim.glb"
+
+    # Serialize panel data for the script
+    sim_data = json.dumps({
+        "panels": panels,
+        "fabric_assignments": fabric_assignments,
+        "sim_frames": sim_frames,
+        "default_fabric": default_fabric,
+        "default_color": default_color,
+        "output_path": str(output_path).replace("\\", "/"),
+    })
+
+    script_path = Path(f"/tmp/blender-work/{job_id}_clo3d_sim.py")
+    script_code = f'''
+import sys
+import json
+sys.path.insert(0, "{str(SCRIPTS_DIR.parent).replace(chr(92), '/')}")
+from clo3d_api import pattern_api, fabric_api, utility_api, export_api
+
+data = json.loads({repr(sim_data)})
+
+panels = data["panels"]
+fab_assign = data["fabric_assignments"]
+default_fabric = data["default_fabric"]
+default_color = data["default_color"]
+sim_frames = data["sim_frames"]
+output_path = data["output_path"]
+
+# Create patterns
+for i, panel in enumerate(panels):
+    verts = panel.get("vertices", [])
+    if len(verts) < 3:
+        continue
+    idx = pattern_api.CreatePatternWithPoints([(v[0], v[1]) for v in verts])
+    name = panel.get("name", f"Panel_{{i}}")
+    pattern_api.SetPatternName(idx, name)
+
+# Create fabrics and assign
+for i in range(pattern_api.GetPatternCount()):
+    fab_type = fab_assign.get(str(i), default_fabric)
+    fab_idx = fabric_api.AddFabric(fab_type, default_color)
+    fabric_api.AssignFabricToPattern(fab_idx, i)
+
+# Arrange and simulate
+utility_api.AutoArrange()
+utility_api.Simulate(sim_frames)
+
+# Export
+export_api.ExportGLB(output_path)
+print(f"[clo3d] Simulation complete, exported to {{output_path}}")
+'''
+
+    with open(script_path, "w") as f:
+        f.write(script_code)
+
+    panel_names = [p.get("name", "?") for p in panels]
+    print(f"[clo3d] Simulating {len(panels)} panels ({', '.join(panel_names)}) "
+          f"with {default_fabric}, {sim_frames} frames (job {job_id})")
+
+    result = subprocess.run(
+        [BLENDER_BIN, "--background", "--python", str(script_path)],
+        capture_output=True, text=True, timeout=300,
+    )
+
+    if result.returncode != 0:
+        print(f"[clo3d] STDERR: {result.stderr[-500:]}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"CLO3D simulation failed: {result.stderr[-300:]}"
+        )
+
+    if not output_path.exists():
+        raise HTTPException(status_code=500, detail="Simulation produced no output")
+
+    return FileResponse(output_path, media_type="model/gltf-binary", filename="clo3d_simulated.glb")
 
 
 # ── POST /api/blender-execute — Blender-Claude MCP-style: run bpy code → GLB ──
