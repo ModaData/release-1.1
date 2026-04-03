@@ -11,6 +11,7 @@ import PartEditorPanel from "./PartEditorPanel";
 import Editor3DToolbar from "./Editor3DToolbar";
 import MaterialEditorPanel from "./MaterialEditorPanel";
 import MeshOpsPanel from "./MeshOpsPanel";
+import AIEffectTools from "./AIEffectTools";
 import SAMSegmentOverlay from "./SAMSegmentOverlay";
 
 // Dynamically import Three.js viewer (no SSR)
@@ -158,6 +159,50 @@ export default function RenderPanel({ onRetry }) {
         {/* ── Mesh Operations Panel (right side) ── */}
         {is3DView && state.editorPanelOpen === "mesh_ops" && (
           <MeshOpsPanel meshStats={meshStats} />
+        )}
+
+        {/* ── AI Effect Tools Panel (right side) ── */}
+        {is3DView && state.editorPanelOpen === "ai_effects" && (
+          <div className="absolute top-12 right-0 bottom-0 w-56 bg-white border-l border-gray-200 shadow-lg z-20 overflow-hidden">
+            <AIEffectTools
+              currentGlbUrl={proxiedGlbUrl}
+              isProcessing={state.meshOpInProgress !== null}
+              onApplyEffect={async (effect) => {
+                dispatch({ type: "SET_MESH_OP", payload: effect.toolId });
+                try {
+                  // Extract base64 from GLB data URL
+                  const glbBase64 = proxiedGlbUrl?.startsWith("data:")
+                    ? proxiedGlbUrl.split(",")[1]
+                    : null;
+                  if (!glbBase64) {
+                    console.error("[ai-effect] No GLB data available");
+                    return;
+                  }
+                  const res = await fetch("/api/apply-effect", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      glbBase64,
+                      bpyInstruction: effect.bpyInstruction,
+                      toolId: effect.toolId,
+                      toolName: effect.toolName,
+                      position: effect.position,
+                    }),
+                  });
+                  if (res.ok) {
+                    const data = await res.json();
+                    if (data.glbUrl) {
+                      dispatch({ type: "SET_GLB_URL", payload: data.glbUrl });
+                    }
+                  }
+                } catch (err) {
+                  console.error("[ai-effect] Apply failed:", err);
+                } finally {
+                  dispatch({ type: "SET_MESH_OP", payload: null });
+                }
+              }}
+            />
+          </div>
         )}
 
         {/* ── SAM Segment Overlay ── */}
